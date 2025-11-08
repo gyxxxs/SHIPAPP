@@ -8,6 +8,14 @@ from pathlib import Path
 import time
 from collections import Counter
 
+# 尝试导入真实模型
+try:
+    from arc_models import ArcFaultModelSystem
+    REAL_MODELS_AVAILABLE = True
+except ImportError:
+    REAL_MODELS_AVAILABLE = False
+    print("警告: 真实模型模块未找到，将使用模拟模型")
+
 class ArcFaultDetector(nn.Module):
     """电弧故障检测模型（1D CNN架构）"""
     
@@ -40,17 +48,41 @@ class ArcFaultDetector(nn.Module):
 class ModelDiagnostics:
     """深度学习模型诊断系统"""
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, 
+                 model_path: Optional[str] = None,
+                 ditn_model_path: Optional[str] = None,
+                 informer_checkpoint: Optional[str] = None):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = ArcFaultDetector().to(self.device)
         
-        if model_path and Path(model_path).exists():
-            self.load_model(model_path)
+        # 尝试使用真实模型
+        if REAL_MODELS_AVAILABLE:
+            try:
+                self.arc_model_system = ArcFaultModelSystem(
+                    ditn_model_path=ditn_model_path,
+                    informer_checkpoint=informer_checkpoint
+                )
+                self.use_real_models = True
+                self.model = None  # 使用arc_model_system而不是单独的model
+                print("✅ 已加载真实模型系统（1D-DITN + Informer）")
+            except Exception as e:
+                print(f"加载真实模型失败: {e}，使用模拟模型")
+                self.use_real_models = False
+                self.arc_model_system = None
+                self.model = ArcFaultDetector().to(self.device)
+                if model_path and Path(model_path).exists():
+                    self.load_model(model_path)
+                else:
+                    self._initialize_model()
+                self.model.eval()
         else:
-            # 初始化随机权重（实际应用中应加载训练好的模型）
-            self._initialize_model()
-        
-        self.model.eval()
+            self.use_real_models = False
+            self.arc_model_system = None
+            self.model = ArcFaultDetector().to(self.device)
+            if model_path and Path(model_path).exists():
+                self.load_model(model_path)
+            else:
+                self._initialize_model()
+            self.model.eval()
         
         # 诊断指标历史记录
         self.diagnostic_history: List[Dict] = []
@@ -105,58 +137,63 @@ class ModelDiagnostics:
     def inference(self, data: np.ndarray, fault_scenario: str = None) -> Tuple[str, float, str]:
         """模型推理"""
         start_time = time.time()
+        probabilities = None  # 初始化变量
         
-        # 数据预处理
-        if len(data.shape) == 1:
-            data = data.reshape(1, -1)
-        
-        # 确保数据长度一致（截断或填充）
-        target_length = 4000
-        if data.shape[1] > target_length:
-            data = data[:, :target_length]
-        elif data.shape[1] < target_length:
-            padding = np.zeros((data.shape[0], target_length - data.shape[1]))
-            data = np.concatenate([data, padding], axis=1)
-        
-        # 归一化
-        data_mean = np.mean(data)
-        data_std = np.std(data) + 1e-8
-        data = (data - data_mean) / data_std
-        
-        # 转换为tensor
-        tensor_data = torch.FloatTensor(data).to(self.device)
-        
-        # 推理
-        with torch.no_grad():
-            outputs = self.model(tensor_data)
-            probabilities = torch.softmax(outputs, dim=1)
-            confidence, predicted = torch.max(probabilities, 1)
-        
-        inference_time = (time.time() - start_time) * 1000  # 转换为毫秒
+        # 使用真实模型系统
+        if self.use_real_models and self.arc_model_system:
+            status_text, confidence_score, fault_type = self.arc_model_system.inference(data, fault_scenario)
+            inference_time = (time.time() - start_time) * 1000
+        else:
+            # 使用模拟模型
+            # 数据预处理
+            if len(data.shape) == 1:
+                data = data.reshape(1, -1)
+            
+            # 确保数据长度一致（截断或填充）
+            target_length = 4000
+            if data.shape[1] > target_length:
+                data = data[:, :target_length]
+            elif data.shape[1] < target_length:
+                padding = np.zeros((data.shape[0], target_length - data.shape[1]))
+                data = np.concatenate([data, padding], axis=1)
+            
+            # 归一化
+            data_mean = np.mean(data)
+            data_std = np.std(data) + 1e-8
+            data = (data - data_mean) / data_std
+            
+            # 转换为tensor
+            tensor_data = torch.FloatTensor(data).to(self.device)
+            
+            # 推理
+            with torch.no_grad():
+                outputs = self.model(tensor_data)
+                probabilities = torch.softmax(outputs, dim=1)
+                confidence, predicted = torch.max(probabilities, 1)
+            
+            inference_time = (time.time() - start_time) * 1000  # 转换为毫秒
+            
+            # 获取结果
+            class_idx = predicted.item()
+            status_text, fault_type = self.class_map.get(class_idx, ("未知", "unknown"))
+            confidence_score = confidence.item() * 100
+            
+            # 如果是模拟模式，可以根据fault_scenario调整结果
+            if fault_scenario:
+                if fault_scenario == "severe_arc":
+                    status_text, confidence_score, fault_type = "二级预警 (故障确认)", 97.5, "severe_arc"
+                elif fault_scenario == "early_arc":
+                    if confidence_score < 70:
+                        status_text, confidence_score, fault_type = "一级预警 (预测风险)", min(90.0, confidence_score + 20), "early_arc"
+                elif fault_scenario == "motor_start":
+                    status_text, confidence_score, fault_type = "干扰信号 (电机启动)", 10.0, "motor_start"
+                elif fault_scenario == "normal":
+                    status_text, confidence_score, fault_type = "运行正常 (安全)", max(2.0, confidence_score), "normal"
         
         # 记录诊断信息
         self.inference_times.append(inference_time)
-        self.confidence_scores.append(confidence.item() * 100)
+        self.confidence_scores.append(confidence_score)
         self.total_inferences += 1
-        
-        # 获取结果
-        class_idx = predicted.item()
-        status_text, fault_type = self.class_map.get(class_idx, ("未知", "unknown"))
-        confidence_score = confidence.item() * 100
-        
-        # 如果是模拟模式，可以根据fault_scenario调整结果
-        if fault_scenario:
-            if fault_scenario == "severe_arc":
-                status_text, confidence_score, fault_type = "二级预警 (故障确认)", 97.5, "severe_arc"
-            elif fault_scenario == "early_arc":
-                # 模拟早期电弧的渐进检测
-                if confidence_score < 70:
-                    status_text, confidence_score, fault_type = "一级预警 (预测风险)", min(90.0, confidence_score + 20), "early_arc"
-            elif fault_scenario == "motor_start":
-                status_text, confidence_score, fault_type = "干扰信号 (电机启动)", 10.0, "motor_start"
-            elif fault_scenario == "normal":
-                status_text, confidence_score, fault_type = "运行正常 (安全)", max(2.0, confidence_score), "normal"
-        
         self.predictions.append(fault_type)
         
         # 记录详细诊断信息
@@ -164,9 +201,17 @@ class ModelDiagnostics:
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "prediction": fault_type,
             "confidence": confidence_score,
-            "inference_time_ms": round(inference_time, 2),
-            "class_probabilities": {k: round(v.item() * 100, 2) for k, v in enumerate(probabilities[0])}
+            "inference_time_ms": round(inference_time, 2)
         }
+        
+        # 如果是模拟模型，添加概率信息
+        if probabilities is not None:
+            try:
+                diagnostic_record["class_probabilities"] = {
+                    k: round(v.item() * 100, 2) for k, v in enumerate(probabilities[0])
+                }
+            except:
+                pass
         self.diagnostic_history.append(diagnostic_record)
         
         # 只保留最近1000条记录
@@ -188,8 +233,21 @@ class ModelDiagnostics:
         
         uptime_hours = (time.time() - self.start_time) / 3600
         
+        # 计算模型参数
+        if self.use_real_models and self.arc_model_system:
+            model_params = sum(p.numel() for p in self.arc_model_system.ditn_model.parameters())
+            if self.arc_model_system.informer_model:
+                model_params += sum(p.numel() for p in self.arc_model_system.informer_model.parameters())
+            model_size_mb = round(model_params * 4 / (1024 * 1024), 2)
+            model_info = "真实模型系统 (1D-DITN + Informer)"
+        else:
+            model_params = sum(p.numel() for p in self.model.parameters()) if self.model else 0
+            model_size_mb = round(model_params * 4 / (1024 * 1024), 2) if self.model else 0
+            model_info = "模拟模型"
+        
         diagnostics = {
             "model_status": "运行中",
+            "model_type": model_info,
             "device": str(self.device),
             "average_inference_time_ms": round(avg_inference_time, 2),
             "max_inference_time_ms": round(max_inference_time, 2),
@@ -199,10 +257,18 @@ class ModelDiagnostics:
             "uptime_hours": round(uptime_hours, 2),
             "inferences_per_hour": round(self.total_inferences / max(uptime_hours, 0.01), 2),
             "recent_confidence_trend": self.confidence_scores[-10:] if len(self.confidence_scores) >= 10 else self.confidence_scores,
-            "model_parameters": sum(p.numel() for p in self.model.parameters()),
-            "model_size_mb": round(sum(p.numel() * 4 for p in self.model.parameters()) / (1024 * 1024), 2),
+            "model_parameters": model_params,
+            "model_size_mb": model_size_mb,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
+        
+        # 添加真实模型统计信息
+        if self.use_real_models and self.arc_model_system:
+            real_stats = self.arc_model_system.get_statistics()
+            diagnostics.update({
+                "ditn_model": real_stats.get("ditn_model", "未知"),
+                "informer_model": real_stats.get("informer_model", "未知")
+            })
         
         # 性能评估
         if avg_inference_time > 50:
