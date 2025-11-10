@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 import chromadb
 from chromadb.config import Settings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.vectorstores import Chroma
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.document_loaders import (
