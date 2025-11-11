@@ -6,13 +6,29 @@ import json
 import chromadb
 from chromadb.config import Settings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.document_loaders import (
-    PyPDFLoader, TextLoader, UnstructuredMarkdownLoader,
-    UnstructuredWordDocumentLoader, CSVLoader
-)
-from langchain.schema import Document
+# 兼容新版与旧版 LangChain 路径
+try:
+    from langchain_community.vectorstores import Chroma
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_community.document_loaders import (
+        PyPDFLoader, TextLoader, UnstructuredMarkdownLoader,
+        UnstructuredWordDocumentLoader, CSVLoader
+    )
+except ImportError:
+    from langchain.vectorstores import Chroma
+    from langchain.embeddings import HuggingFaceEmbeddings
+    from langchain.document_loaders import (
+        PyPDFLoader, TextLoader, UnstructuredMarkdownLoader,
+        UnstructuredWordDocumentLoader, CSVLoader
+    )
+# 兼容新版与旧版 Document 导入
+try:
+    from langchain_core.documents import Document
+except ImportError:
+    try:
+        from langchain.schema import Document
+    except ImportError:
+        from langchain.documents import Document
 from collections import Counter
 
 class KnowledgeBase:
