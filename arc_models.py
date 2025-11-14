@@ -141,13 +141,13 @@ class InceptionModel1D(nn.Module):
         
         for d in range(depth):
             modules[f'inception_{d}'] = Inception(
-                input_size=1 if d == 0 else 4 * filters,  # 第一层输入通道数为1
+                input_size=input_size if d == 0 else 4 * filters,
                 filters=filters,
                 dilation=dilation
             )
             if d % 3 == 2:
                 modules[f'residual_{d}'] = Residual(
-                    input_size=1 if d == 2 else 4 * filters,  # 第一层输入通道数为1
+                    input_size=input_size if d == 2 else 4 * filters,
                     filters=filters
                 )
         
@@ -243,6 +243,7 @@ class ArcFaultModelSystem:
         }
         
         self.ditn_config = {**default_ditn_config, **(ditn_config or {})}
+        class_map_from_config = self.ditn_config.pop('class_map', None)
         self.informer_config = {**default_informer_config, **(informer_config or {})}
         
         # 初始化1D-DITN模型
@@ -250,9 +251,10 @@ class ArcFaultModelSystem:
         self.ditn_model.eval()
         
         if ditn_model_path and Path(ditn_model_path).exists():
-            self.load_ditn_model(ditn_model_path)
+            self.load_ditn_model(ditn_model_path, class_map_override=class_map_from_config)
         else:
             print("警告: 未找到1D-DITN模型文件，使用随机初始化")
+            self._update_class_map(class_map_from_config)
         
         # 初始化Informer模型
         self.informer_model = None
@@ -283,32 +285,38 @@ class ArcFaultModelSystem:
         # 数据预处理
         self.scaler = MinMaxScaler()
         
-        # 类别映射（二分类）
-        self.class_map = {
-            0: ("运行正常 (安全)", "normal"),
-            1: ("故障预警 (异常)", "fault")
-        }
+        # 类别映射
+        self.class_map = self._build_default_class_map(self.ditn_config['num_classes'])
         
         # 统计信息
         self.inference_count = 0
         self.inference_times = []
     
-    def load_ditn_model(self, model_path: str):
+    def load_ditn_model(self, model_path: str, class_map_override: Optional[Dict] = None):
         """加载1D-DITN模型"""
         try:
-            checkpoint = torch.load(model_path, map_location=self.device)
-            if isinstance(checkpoint, dict):
-                if 'model_state_dict' in checkpoint:
-                    self.ditn_model.load_state_dict(checkpoint['model_state_dict'])
-                elif 'state_dict' in checkpoint:
-                    self.ditn_model.load_state_dict(checkpoint['state_dict'])
-                else:
-                    self.ditn_model.load_state_dict(checkpoint)
-            else:
-                self.ditn_model.load_state_dict(checkpoint)
+            state_dict, metadata = self._load_checkpoint_file(model_path)
+
+            checkpoint_config = metadata.get('ditn_config', {})
+            if checkpoint_config:
+                for key, value in checkpoint_config.items():
+                    if key in self.ditn_config:
+                        self.ditn_config[key] = value
+
+            checkpoint_num_classes = metadata.get('num_classes')
+            if checkpoint_num_classes and checkpoint_num_classes != self.ditn_config['num_classes']:
+                self.ditn_config['num_classes'] = checkpoint_num_classes
+                self.ditn_model = InceptionModel1D(**self.ditn_config).to(self.device)
+                self.ditn_model.eval()
+
+            self.ditn_model.load_state_dict(state_dict)
             print(f"1D-DITN模型已从 {model_path} 加载")
+
+            class_map_data = class_map_override or metadata.get('class_map')
+            self._update_class_map(class_map_data)
         except Exception as e:
             print(f"加载1D-DITN模型失败: {e}")
+            self._update_class_map(class_map_override)
     
     def load_informer_model(self, checkpoint_path: str):
         """加载Informer模型"""
@@ -374,24 +382,14 @@ class ArcFaultModelSystem:
         import time
         start_time = time.time()
         
-        try:
-            # 预处理
-            tensor_data = self.preprocess_data(data)
-            # 注意: 模型forward方法会自动处理维度 [batch, seq_len] -> [batch, 1, seq_len]
-            
-            # 推理
-            with torch.no_grad():
-                outputs = self.ditn_model(tensor_data)
-                probabilities = torch.softmax(outputs, dim=1)
-                confidence, predicted = torch.max(probabilities, 1)
-        except Exception as e:
-            print(f"模型推理错误: {e}")
-            print(f"输入数据形状: {data.shape if hasattr(data, 'shape') else 'N/A'}")
-            print(f"Tensor数据形状: {tensor_data.shape if 'tensor_data' in locals() else 'N/A'}")
-            import traceback
-            traceback.print_exc()
-            # 返回默认值
-            return "运行正常 (安全)", 50.0, "normal"
+        # 预处理
+        tensor_data = self.preprocess_data(data)
+        
+        # 推理
+        with torch.no_grad():
+            outputs = self.ditn_model(tensor_data)
+            probabilities = torch.softmax(outputs, dim=1)
+            confidence, predicted = torch.max(probabilities, 1)
         
         inference_time = (time.time() - start_time) * 1000
         self.inference_times.append(inference_time)
@@ -514,9 +512,77 @@ class ArcFaultModelSystem:
             "informer_model": "已加载" if self.informer_model else "未加载",
             "total_inferences": self.inference_count,
             "average_inference_time_ms": round(avg_inference_time, 2),
-            "device": str(self.device)
+            "device": str(self.device),
+            "num_classes": self.ditn_config.get('num_classes', 0)
         }
         
         return stats
 
+    def _load_checkpoint_file(self, model_path: str):
+        """加载checkpoint，返回(state_dict, metadata)"""
+        checkpoint = torch.load(model_path, map_location=self.device)
+        metadata: Dict = {}
+        state_dict = checkpoint
+
+        if isinstance(checkpoint, dict):
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            elif 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+
+            for key in ('num_classes', 'class_map', 'ditn_config'):
+                if key in checkpoint:
+                    metadata[key] = checkpoint[key]
+
+        return state_dict, metadata
+
+    def _build_default_class_map(self, num_classes: int) -> Dict[int, Tuple[str, str]]:
+        """根据类别数量生成默认映射"""
+        class_map: Dict[int, Tuple[str, str]] = {}
+        for idx in range(num_classes):
+            if idx == 0:
+                class_map[idx] = ("运行正常 (安全)", "normal")
+            elif idx == 1 and num_classes == 2:
+                class_map[idx] = ("故障预警 (异常)", "fault")
+            else:
+                class_map[idx] = (f"类别 {idx}", f"class_{idx}")
+        return class_map
+
+    def _update_class_map(self, class_map_data: Optional[Dict]):
+        """更新类别映射"""
+        if not class_map_data:
+            self.class_map = self._build_default_class_map(self.ditn_config['num_classes'])
+            return
+
+        formatted: Dict[int, Tuple[str, str]] = {}
+        for key, value in class_map_data.items():
+            try:
+                idx = int(key)
+            except Exception:
+                continue
+
+            status_text = None
+            fault_type = None
+
+            if isinstance(value, (list, tuple)):
+                if len(value) >= 2:
+                    status_text, fault_type = value[0], value[1]
+                elif len(value) == 1:
+                    status_text = value[0]
+            elif isinstance(value, dict):
+                status_text = value.get("status") or value.get("text") or value.get("label")
+                fault_type = value.get("fault_type") or value.get("code")
+            elif isinstance(value, str):
+                status_text = value
+
+            status_text = status_text or f"类别 {idx}"
+            fault_type = fault_type or f"class_{idx}"
+            formatted[idx] = (status_text, fault_type)
+
+        default_map = self._build_default_class_map(self.ditn_config['num_classes'])
+        for idx in range(self.ditn_config['num_classes']):
+            if idx not in formatted:
+                formatted[idx] = default_map.get(idx, (f"类别 {idx}", f"class_{idx}"))
+
+        self.class_map = formatted
 
