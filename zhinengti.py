@@ -114,7 +114,7 @@ def get_model_diagnostics():
         return ModelDiagnostics()
     return None
 
-def dl_model_inference(fault_scenario):
+def dl_model_inference(current_data, fault_scenario):
     """直接使用模拟数据进行推理"""
     # 生成模拟数据（长度与模型输入尺寸匹配）
     model_diagnostics = get_model_diagnostics()
