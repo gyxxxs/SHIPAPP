@@ -10,7 +10,6 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 import json
-
 # 新增导入 - RAG和模型诊断
 try:
     from knowledge_base import KnowledgeBase, init_knowledge_base
@@ -122,7 +121,10 @@ def dl_model_inference(current_data, fault_scenario):
     data = simulate_current_data(t=input_size, fault_scenario=fault_scenario)
     
     if model_diagnostics is not None:
-        return model_diagnostics.inference(data, fault_scenario)
+        # 错误点：传入了整个元组，应只传入电流数据（元组的第二个元素）
+        # return model_diagnostics.inference(data, fault_scenario)
+        # 修正：
+        return model_diagnostics.inference(data[1], fault_scenario)  # 只取电流数据
     else:
         # 回退到模拟模式
         if fault_scenario == "severe_arc":
@@ -143,7 +145,7 @@ def dl_model_inference(current_data, fault_scenario):
         else:
             st.session_state.early_arc_confidence = 70.0 if 'early_arc_confidence' in st.session_state else 70.0
             return "运行正常 (安全)", 2.0, "normal"
-
+    
 # --- 3. 智能体核心逻辑 (集成RAG) ---
 @st.cache_resource
 def get_gemini_client():
