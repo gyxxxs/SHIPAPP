@@ -490,9 +490,8 @@ def main():
         st.header("📊 实时监测 Dashboard")
         
         t_series, current_data = simulate_current_data(
-            t=4000, 
-            fault_scenario=st.session_state.fault_scenario,
-            prediction_mode=(st.session_state.fault_scenario == "early_arc")
+            t=4000,
+            fault_scenario=st.session_state.fault_scenario
         )
         
         # 模型推理
