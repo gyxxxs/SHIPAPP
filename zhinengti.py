@@ -89,43 +89,22 @@ AVAILABLE_TOOLS = {
 }
 
 # --- 1. 增强的数据模拟 (保持不变) ---
-def simulate_current_data(t, fault_scenario="normal", prediction_mode=False):
-    """
-    模拟更真实的船舶电流数据
-    """
+def simulate_current_data(t=4000, fault_scenario="normal"):
+    """生成与模型输入长度匹配的模拟数据（默认4000点）"""
     base_frequency = 50
-    # 模拟波形滚动，加入一个随机相位偏移
-    phase_offset = time.time() * 2 * np.pi * base_frequency / 1000 
+    time_series = np.linspace(0, 2 / base_frequency, t)
+    current = 10 * np.sin(2 * np.pi * base_frequency * time_series)
     
-    time_series = np.linspace(0, 2 / base_frequency, t)  # 2个周期
-    current = 10 * np.sin(2 * np.pi * base_frequency * time_series + phase_offset)
-    
-    # 基础噪声
-    current += np.random.normal(0, 0.05, t)
-    
+    # 添加故障特征（保持原有逻辑）
     if fault_scenario == "early_arc":
-        # 早期电弧特征:间歇性高频噪声
         mask = (time_series % 0.1 < 0.02)
-        high_freq = np.sin(2 * np.pi * 5000 * time_series) * 0.3
-        current += high_freq * mask
-        
+        current += np.sin(2 * np.pi * 5000 * time_series) * 0.3 * mask
     elif fault_scenario == "severe_arc":
-        # 严重电弧特征:持续高频噪声+幅值变化
-        high_freq = np.sin(2 * np.pi * 3000 * time_series) * 0.8
-        current += high_freq + 2 * np.random.rand(t)
-        
+        current += np.sin(2 * np.pi * 3000 * time_series) * 0.8 + 2 * np.random.rand(t)
     elif fault_scenario == "motor_start":
-        # 电机启动干扰
-        startup_effect = 3 * np.exp(-time_series * 2) * np.sin(2 * np.pi * 100 * time_series)
-        current += startup_effect
-
-    if prediction_mode:
-        # 预测模式下的趋势特征
-        trend_factor = (time.time() - st.session_state.last_update) / 10 
-        trend = 0.5 * np.exp(-time_series * 3) * np.sin(2 * np.pi * 150 * time_series) * (1 + trend_factor)
-        current += trend
-
-    return time_series * 1000, current
+        current += 3 * np.exp(-time_series * 2) * np.sin(2 * np.pi * 100 * time_series)
+    
+    return current  # 直接返回一维电流数据
 
 # --- 2. 增强的模型推理 (集成真实模型) ---
 @st.cache_resource
@@ -135,14 +114,15 @@ def get_model_diagnostics():
         return ModelDiagnostics()
     return None
 
-def dl_model_inference(data, fault_scenario):
-    """使用真实深度学习模型进行推理"""
+def dl_model_inference(fault_scenario):
+    """直接使用模拟数据进行推理"""
+    # 生成模拟数据（长度与模型输入尺寸匹配）
     model_diagnostics = get_model_diagnostics()
+    input_size = model_diagnostics.arc_model_system.ditn_config['input_size'] if model_diagnostics else 4000
+    data = simulate_current_data(t=input_size, fault_scenario=fault_scenario)
     
     if model_diagnostics is not None:
-        # 使用真实模型推理
-        status_text, confidence, fault_type = model_diagnostics.inference(data, fault_scenario)
-        return status_text, confidence, fault_type
+        return model_diagnostics.inference(data, fault_scenario)
     else:
         # 回退到模拟模式
         if fault_scenario == "severe_arc":
