@@ -104,7 +104,7 @@ def simulate_current_data(t=4000, fault_scenario="normal"):
     elif fault_scenario == "motor_start":
         current += 3 * np.exp(-time_series * 2) * np.sin(2 * np.pi * 100 * time_series)
     
-    return time_series, current_datat  # 直接返回一维电流数据
+    return time_series, current  # 直接返回一维电流数据
 
 # --- 2. 增强的模型推理 (集成真实模型) ---
 @st.cache_resource
