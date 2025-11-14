@@ -145,7 +145,7 @@ def dl_model_inference(current_data, fault_scenario):
         else:
             st.session_state.early_arc_confidence = 70.0 if 'early_arc_confidence' in st.session_state else 70.0
             return "运行正常 (安全)", 2.0, "normal"
-    
+            pass
 # --- 3. 智能体核心逻辑 (集成RAG) ---
 @st.cache_resource
 def get_gemini_client():
