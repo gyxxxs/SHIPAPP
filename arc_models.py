@@ -346,36 +346,37 @@ class ArcFaultModelSystem:
             return False
     
     def preprocess_data(self, data: np.ndarray) -> torch.Tensor:
-        """数据预处理"""
-        import time
-        start_time = time.time()
-        
-        # 确保数据长度一致
-        target_length = self.ditn_config['input_size']
-        if len(data.shape) == 1:
-            data = data.reshape(1, -1)
-        
-        # 截断或填充
+       """数据预处理：确保维度和长度符合模型要求"""
+    import time
+    start_time = time.time()
+    
+    # 确保输入是二维数组 (batch_size, sequence_length)
+    if len(data.shape) == 1:
+        data = data.reshape(1, -1)  # 单样本时添加batch维度
+    elif len(data.shape) != 2:
+        raise ValueError(f"输入数据必须是1D或2D数组，实际为{data.shape}")
+    
+    # 确保序列长度与模型input_size一致（截断或填充）
+    target_length = self.ditn_config['input_size']
+    if data.shape[1] != target_length:
         if data.shape[1] > target_length:
-            data = data[:, :target_length]
-        elif data.shape[1] < target_length:
+            data = data[:, :target_length]  # 截断过长数据
+        else:
+            # 填充短数据（用0填充）
             padding = np.zeros((data.shape[0], target_length - data.shape[1]))
             data = np.concatenate([data, padding], axis=1)
-        
-        # Savitzky-Golay滤波
-        filtered_data = np.zeros_like(data)
-        for i in range(data.shape[0]):
-            filtered_data[i] = savgol_filter(data[i], window_length=7, polyorder=2)
-        
-        # 归一化
-        filtered_data = filtered_data.reshape(-1, 1)
-        filtered_data = self.scaler.fit_transform(filtered_data)
-        filtered_data = filtered_data.reshape(1, -1)
-        
-        # 转换为tensor
-        tensor_data = torch.FloatTensor(filtered_data).to(self.device)
-        
-        return tensor_data
+    
+    # 后续滤波和归一化步骤保持不变...
+    filtered_data = np.zeros_like(data)
+    for i in range(data.shape[0]):
+        filtered_data[i] = savgol_filter(data[i], window_length=7, polyorder=2)
+    
+    filtered_data = filtered_data.reshape(-1, 1)
+    filtered_data = self.scaler.fit_transform(filtered_data)
+    filtered_data = filtered_data.reshape(1, -1)
+    
+    tensor_data = torch.FloatTensor(filtered_data).to(self.device)
+    return tensor_data
     
     def classify(self, data: np.ndarray) -> Tuple[str, float, str]:
         """
