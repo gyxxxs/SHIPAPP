@@ -346,8 +346,8 @@ class ArcFaultModelSystem:
             return False
     
     def preprocess_data(self, data: np.ndarray) -> torch.Tensor:
-       """数据预处理：确保维度和长度符合模型要求"""
-     """简化预处理，适配模拟数据"""
+        """数据预处理：确保维度和长度符合模型要求"""
+        """简化预处理，适配模拟数据"""
         # 确保数据维度正确 (batch, seq_len)
         if len(data.shape) == 1:
             data = data.reshape(1, -1)
