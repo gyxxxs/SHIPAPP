@@ -348,20 +348,20 @@ class ArcFaultModelSystem:
     def preprocess_data(self, data: np.ndarray) -> torch.Tensor:
        """数据预处理：确保维度和长度符合模型要求"""
      """简化预处理，适配模拟数据"""
-    # 确保数据维度正确 (batch, seq_len)
-    if len(data.shape) == 1:
-        data = data.reshape(1, -1)
+        # 确保数据维度正确 (batch, seq_len)
+        if len(data.shape) == 1:
+            data = data.reshape(1, -1)
+        
+        # 截断或填充到模型期望的输入长度
+        target_length = self.ditn_config['input_size']
+        if data.shape[1] > target_length:
+            data = data[:, :target_length]
+        elif data.shape[1] < target_length:
+            data = np.pad(data, ((0, 0), (0, target_length - data.shape[1])), mode='constant')
     
-    # 截断或填充到模型期望的输入长度
-    target_length = self.ditn_config['input_size']
-    if data.shape[1] > target_length:
-        data = data[:, :target_length]
-    elif data.shape[1] < target_length:
-        data = np.pad(data, ((0, 0), (0, target_length - data.shape[1])), mode='constant')
-    
-    # 转换为tensor并添加通道维度 (batch, channels, seq_len)
-    tensor_data = torch.FloatTensor(data).unsqueeze(1).to(self.device)
-    return tensor_data
+        # 转换为tensor并添加通道维度 (batch, channels, seq_len)
+        tensor_data = torch.FloatTensor(data).unsqueeze(1).to(self.device)
+        return tensor_data
     
     def classify(self, data: np.ndarray) -> Tuple[str, float, str]:
         """
