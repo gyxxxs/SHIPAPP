@@ -14,6 +14,7 @@ from pathlib import Path
 from collections import OrderedDict
 from scipy.signal import savgol_filter
 from sklearn.preprocessing import MinMaxScaler
+import math
 
 # 添加Informer模型路径
 informer_path = Path(__file__).parent / "Arc Prediction Task"
@@ -30,6 +31,10 @@ except ImportError:
 
 # ==================== 1D-DITN 模型定义 ====================
 
+def _same_padding(kernel_size: int, dilation: int = 1) -> int:
+    """PyTorch<1.10 无 padding='same'，手动计算填充"""
+    return math.floor(((kernel_size - 1) * dilation) / 2)
+
 class Inception(nn.Module):
     """Inception模块"""
     def __init__(self, input_size, filters, dilation=0):
@@ -39,7 +44,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=1,
             stride=1,
-            padding='same',
+            padding=_same_padding(1),
             bias=False
         )
         
@@ -48,7 +53,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=10,
             stride=1,
-            padding='same',
+            padding=_same_padding(10, 1 + dilation),
             dilation=1 + dilation,
             bias=False
         )
@@ -58,7 +63,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=20,
             stride=1,
-            padding='same',
+            padding=_same_padding(20, 1 + dilation),
             dilation=1 + dilation,
             bias=False
         )
@@ -68,7 +73,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=40,
             stride=1,
-            padding='same',
+            padding=_same_padding(40, 1 + dilation),
             dilation=1 + dilation,
             bias=False
         )
@@ -78,7 +83,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=1,
             stride=1,
-            padding='same',
+            padding=_same_padding(1),
             bias=False
         )
         
@@ -105,7 +110,7 @@ class Residual(nn.Module):
             out_channels=4 * filters,
             kernel_size=1,
             stride=1,
-            padding='same',
+            padding=_same_padding(1),
             bias=False
         )
         self.batch_norm = nn.BatchNorm1d(num_features=4 * filters)
