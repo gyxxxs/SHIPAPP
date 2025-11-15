@@ -166,7 +166,7 @@ class InceptionModel1D(nn.Module):
         # x shape: [batch, channels, seq_len]
         if len(x.shape) == 2:
             x = x.unsqueeze(1)  # [batch, 1, seq_len]
-        x = x.transpose(1, 2)
+        # x = x.transpose(1, 2)
         y = None
         for d in range(self.depth):
             y = self.model.get_submodule(f'inception_{d}')(x if d == 0 else y)
@@ -204,7 +204,7 @@ class ArcFaultModelSystem:
         
         # 默认配置
         default_ditn_config = {
-            'input_size': 4000,
+            'input_size': 1,
             'num_classes': 2,  # 二分类：正常/故障
             'filters': 32,
             'depth': 6,
@@ -346,23 +346,18 @@ class ArcFaultModelSystem:
             return False
     
     def preprocess_data(self, data: np.ndarray) -> torch.Tensor:
-        """数据预处理：确保维度和长度符合模型要求"""
-        """简化预处理，适配模拟数据"""
-        # 确保数据维度正确 (batch, seq_len)
+        """统一预处理：返回 [batch, seq_len, 1]"""
         if len(data.shape) == 1:
-            data = data.reshape(1, -1)
-        
-        # 截断或填充到模型期望的输入长度
+            data = data.reshape(1, -1)  # [1, seq_len]
+    
         target_length = self.ditn_config['input_size']
         if data.shape[1] > target_length:
             data = data[:, :target_length]
         elif data.shape[1] < target_length:
             data = np.pad(data, ((0, 0), (0, target_length - data.shape[1])), mode='constant')
     
-        # 转换为tensor并添加通道维度 (batch, channels, seq_len)
-        tensor_data = torch.FloatTensor(data).unsqueeze(1).to(self.device)
-        # ✅ 转置为 (batch, seq_len, channels) 以匹配模型输入
-        tensor_data = tensor_data.transpose(1, 2)
+        # ✅ 统一为 [batch, seq_len, 1]
+        tensor_data = torch.FloatTensor(data).unsqueeze(-1).to(self.device)
         return tensor_data
     
     def classify(self, data: np.ndarray) -> Tuple[str, float, str]:
