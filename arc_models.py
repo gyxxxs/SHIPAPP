@@ -59,7 +59,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=1,
             stride=1,
-            padding=_same_padding(1),
+            padding='same',
             bias=False
         )
 
@@ -69,7 +69,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=10,
             stride=1,
-            padding=_same_padding(10, 1 + dilation),
+            padding='same',
             dilation=1 + dilation,
             bias=False
         )
@@ -79,7 +79,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=20,
             stride=1,
-            padding=_same_padding(20, 1 + dilation),
+            padding='same',
             dilation=1 + dilation,
             bias=False
         )
@@ -89,7 +89,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=40,
             stride=1,
-            padding=_same_padding(40, 1 + dilation),
+            padding='same',
             dilation=1 + dilation,
             bias=False
         )
@@ -99,7 +99,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=1,
             stride=1,
-            padding=_same_padding(1),
+            padding='same',
             bias=False
         )
 
@@ -133,7 +133,7 @@ class Residual(nn.Module):
             out_channels=out_channels_branch,
             kernel_size=1,
             stride=1,
-            padding=_same_padding(1),
+            padding='same',
             bias=False
         )
         self.batch_norm = nn.BatchNorm1d(num_features=out_channels_branch)
