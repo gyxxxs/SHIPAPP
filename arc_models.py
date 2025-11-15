@@ -166,7 +166,7 @@ class InceptionModel1D(nn.Module):
         # x shape: [batch, channels, seq_len]
         if len(x.shape) == 2:
             x = x.unsqueeze(1)  # [batch, 1, seq_len]
-        
+        x = x.transpose(1, 2)
         y = None
         for d in range(self.depth):
             y = self.model.get_submodule(f'inception_{d}')(x if d == 0 else y)
@@ -361,6 +361,8 @@ class ArcFaultModelSystem:
     
         # 转换为tensor并添加通道维度 (batch, channels, seq_len)
         tensor_data = torch.FloatTensor(data).unsqueeze(1).to(self.device)
+        # ✅ 转置为 (batch, seq_len, channels) 以匹配模型输入
+        tensor_data = tensor_data.transpose(1, 2)
         return tensor_data
     
     def classify(self, data: np.ndarray) -> Tuple[str, float, str]:
