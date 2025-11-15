@@ -42,7 +42,7 @@ class Inception(nn.Module):
             padding='same',
             bias=False
         )
-
+        
         self.conv1 = nn.Conv1d(
             in_channels=filters,
             out_channels=filters,
@@ -52,7 +52,7 @@ class Inception(nn.Module):
             dilation=1 + dilation,
             bias=False
         )
-
+        
         self.conv2 = nn.Conv1d(
             in_channels=filters,
             out_channels=filters,
@@ -62,7 +62,7 @@ class Inception(nn.Module):
             dilation=1 + dilation,
             bias=False
         )
-
+        
         self.conv3 = nn.Conv1d(
             in_channels=filters,
             out_channels=filters,
@@ -72,7 +72,7 @@ class Inception(nn.Module):
             dilation=1 + dilation,
             bias=False
         )
-
+        
         self.conv4 = nn.Conv1d(
             in_channels=filters,
             out_channels=filters,
@@ -81,9 +81,9 @@ class Inception(nn.Module):
             padding='same',
             bias=False
         )
-
+        
         self.batch_norm = nn.BatchNorm1d(num_features=4 * filters)
-
+    
     def forward(self, x):
         x = self.bottleneck(x)
         y1 = self.conv1(x)
@@ -109,7 +109,7 @@ class Residual(nn.Module):
             bias=False
         )
         self.batch_norm = nn.BatchNorm1d(num_features=4 * filters)
-
+    
     def forward(self, x, y):
         y = y + self.batch_norm(self.bottleneck(x))
         y = F.relu(y)
@@ -121,7 +121,7 @@ class Lambda(nn.Module):
     def __init__(self, f):
         super(Lambda, self).__init__()
         self.f = f
-
+    
     def forward(self, x):
         return self.f(x)
 
@@ -136,41 +136,39 @@ class InceptionModel1D(nn.Module):
         self.depth = depth
         self.dilation = dilation
         self.drop = nn.Dropout(p=dropout)
-
+        
         modules = OrderedDict()
-
+        
         for d in range(depth):
             modules[f'inception_{d}'] = Inception(
-                input_size=input_size if d == 0 else 4 * filters,
                 input_size=1 if d == 0 else 4 * filters,  # 第一层输入通道数为1
                 filters=filters,
                 dilation=dilation
             )
             if d % 3 == 2:
                 modules[f'residual_{d}'] = Residual(
-                    input_size=input_size if d == 2 else 4 * filters,
                     input_size=1 if d == 2 else 4 * filters,  # 第一层输入通道数为1
                     filters=filters
                 )
-
+        
         modules['avg_pool'] = Lambda(f=lambda x: torch.mean(x, dim=-1))
         modules['linear1'] = nn.Linear(in_features=4 * filters, out_features=filters)
         modules['linear2'] = nn.Linear(in_features=filters, out_features=num_classes)
-
+        
         self.model = nn.Sequential(modules)
 
     def forward(self, x):
         # x shape: [batch, channels, seq_len]
         if len(x.shape) == 2:
             x = x.unsqueeze(1)  # [batch, 1, seq_len]
-
+        
         y = None
         for d in range(self.depth):
             y = self.model.get_submodule(f'inception_{d}')(x if d == 0 else y)
             if d % 3 == 2:
                 y = self.model.get_submodule(f'residual_{d}')(x, y)
                 x = y
-
+        
         y = self.model.get_submodule('avg_pool')(y)
         y = self.model.get_submodule('linear1')(y)
         y = self.drop(F.relu(y))
@@ -182,7 +180,7 @@ class InceptionModel1D(nn.Module):
 
 class ArcFaultModelSystem:
     """电弧故障检测模型系统 - 集成1D-DITN和Informer"""
-
+    
     def __init__(self, 
                  ditn_model_path: Optional[str] = None,
                  informer_checkpoint: Optional[str] = None,
@@ -198,7 +196,7 @@ class ArcFaultModelSystem:
             informer_config: Informer模型配置
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+        
         # 默认配置
         default_ditn_config = {
             'input_size': 4000,
@@ -208,7 +206,7 @@ class ArcFaultModelSystem:
             'dilation': 4,
             'dropout': 0.5
         }
-
+        
         default_informer_config = {
             'model': 'informer',
             'enc_in': 1,
@@ -243,19 +241,19 @@ class ArcFaultModelSystem:
             'target': 'value',
             'checkpoints': str(Path(__file__).parent / "Arc Prediction Task" / "checkpoints"),
         }
-
+        
         self.ditn_config = {**default_ditn_config, **(ditn_config or {})}
         self.informer_config = {**default_informer_config, **(informer_config or {})}
-
+        
         # 初始化1D-DITN模型
         self.ditn_model = InceptionModel1D(**self.ditn_config).to(self.device)
         self.ditn_model.eval()
-
+        
         if ditn_model_path and Path(ditn_model_path).exists():
             self.load_ditn_model(ditn_model_path)
         else:
             print("警告: 未找到1D-DITN模型文件，使用随机初始化")
-
+        
         # 初始化Informer模型
         self.informer_model = None
         self.informer_exp = None
@@ -269,7 +267,7 @@ class ArcFaultModelSystem:
                     default_checkpoint = Path(__file__).parent / "Arc Prediction Task" / "checkpoints" / "informer_custom_train"
                     if default_checkpoint.exists():
                         informer_checkpoint = str(default_checkpoint)
-
+                
                 if informer_checkpoint:
                     if self.load_informer_model(informer_checkpoint):
                         print("✅ Informer模型已加载")
@@ -281,20 +279,20 @@ class ArcFaultModelSystem:
                 print(f"Informer模型初始化失败: {e}")
                 import traceback
                 traceback.print_exc()
-
+        
         # 数据预处理
         self.scaler = MinMaxScaler()
-
+        
         # 类别映射（二分类）
         self.class_map = {
             0: ("运行正常 (安全)", "normal"),
             1: ("故障预警 (异常)", "fault")
         }
-
+        
         # 统计信息
         self.inference_count = 0
         self.inference_times = []
-
+    
     def load_ditn_model(self, model_path: str):
         """加载1D-DITN模型"""
         try:
@@ -311,18 +309,18 @@ class ArcFaultModelSystem:
             print(f"1D-DITN模型已从 {model_path} 加载")
         except Exception as e:
             print(f"加载1D-DITN模型失败: {e}")
-
+    
     def load_informer_model(self, checkpoint_path: str):
         """加载Informer模型"""
         if not INFORMER_AVAILABLE or not self.informer_exp:
             return False
-
+        
         try:
             checkpoint_file = Path(checkpoint_path) / 'checkpoint.pth'
             if not checkpoint_file.exists():
                 print(f"Informer checkpoint文件不存在: {checkpoint_file}")
                 return False
-
+            
             self.informer_exp.model.load_state_dict(
                 torch.load(checkpoint_file, map_location=self.device)
             )
@@ -333,39 +331,39 @@ class ArcFaultModelSystem:
         except Exception as e:
             print(f"加载Informer模型失败: {e}")
             return False
-
+    
     def preprocess_data(self, data: np.ndarray) -> torch.Tensor:
         """数据预处理"""
         import time
         start_time = time.time()
-
+        
         # 确保数据长度一致
         target_length = self.ditn_config['input_size']
         if len(data.shape) == 1:
             data = data.reshape(1, -1)
-
+        
         # 截断或填充
         if data.shape[1] > target_length:
             data = data[:, :target_length]
         elif data.shape[1] < target_length:
             padding = np.zeros((data.shape[0], target_length - data.shape[1]))
             data = np.concatenate([data, padding], axis=1)
-
+        
         # Savitzky-Golay滤波
         filtered_data = np.zeros_like(data)
         for i in range(data.shape[0]):
             filtered_data[i] = savgol_filter(data[i], window_length=7, polyorder=2)
-
+        
         # 归一化
         filtered_data = filtered_data.reshape(-1, 1)
         filtered_data = self.scaler.fit_transform(filtered_data)
         filtered_data = filtered_data.reshape(1, -1)
-
+        
         # 转换为tensor
         tensor_data = torch.FloatTensor(filtered_data).to(self.device)
-
+        
         return tensor_data
-
+    
     def classify(self, data: np.ndarray) -> Tuple[str, float, str]:
         """
         使用1D-DITN模型进行分类
@@ -375,15 +373,7 @@ class ArcFaultModelSystem:
         """
         import time
         start_time = time.time()
-
-        # 预处理
-        tensor_data = self.preprocess_data(data)
         
-        # 推理
-        with torch.no_grad():
-            outputs = self.ditn_model(tensor_data)
-            probabilities = torch.softmax(outputs, dim=1)
-            confidence, predicted = torch.max(probabilities, 1)
         try:
             # 预处理
             tensor_data = self.preprocess_data(data)
@@ -402,18 +392,18 @@ class ArcFaultModelSystem:
             traceback.print_exc()
             # 返回默认值
             return "运行正常 (安全)", 50.0, "normal"
-
+        
         inference_time = (time.time() - start_time) * 1000
         self.inference_times.append(inference_time)
         self.inference_count += 1
-
+        
         # 获取结果
         class_idx = predicted.item()
         status_text, fault_type = self.class_map.get(class_idx, ("未知", "unknown"))
         confidence_score = confidence.item() * 100
-
+        
         return status_text, confidence_score, fault_type
-
+    
     def predict(self, data: np.ndarray, seq_len: int = None, pred_len: int = None) -> Optional[np.ndarray]:
         """
         使用Informer模型进行时间序列预测
@@ -428,19 +418,19 @@ class ArcFaultModelSystem:
         """
         if not INFORMER_AVAILABLE or self.informer_model is None:
             return None
-
+        
         try:
             seq_len = seq_len or self.informer_config['seq_len']
             pred_len = pred_len or self.informer_config['pred_len']
             label_len = self.informer_config['label_len']
-
+            
             # 准备输入数据
             if len(data.shape) == 1:
                 data = data.reshape(-1, 1)
             elif len(data.shape) == 2 and data.shape[1] > 1:
                 # 如果是多列，只取第一列
                 data = data[:, 0:1]
-
+            
             # 截取最后seq_len个点
             if data.shape[0] > seq_len:
                 input_data = data[-seq_len:].copy()
@@ -448,15 +438,15 @@ class ArcFaultModelSystem:
                 # 填充
                 padding = np.zeros((seq_len - data.shape[0], 1))
                 input_data = np.concatenate([padding, data], axis=0)
-
+            
             # 转换为tensor
             batch_x = torch.FloatTensor(input_data).unsqueeze(0).to(self.device)  # [1, seq_len, 1]
-
+            
             # 创建时间标记（简化版，使用零填充）
             # 实际应用中应该使用真实的时间特征
             batch_x_mark = torch.zeros(1, seq_len, 4).to(self.device)  # [1, seq_len, 4]
             batch_y_mark = torch.zeros(1, pred_len, 4).to(self.device)  # [1, pred_len, 4]
-
+            
             # decoder输入：label_len的历史数据 + pred_len的零填充
             dec_inp = torch.zeros(1, label_len + pred_len, 1).to(self.device)
             # 使用最后label_len个点作为decoder的起始输入
@@ -464,13 +454,13 @@ class ArcFaultModelSystem:
                 dec_inp[:, :label_len, :] = torch.FloatTensor(input_data[-label_len:]).unsqueeze(0).to(self.device)
             else:
                 dec_inp[:, :input_data.shape[0], :] = torch.FloatTensor(input_data).unsqueeze(0).to(self.device)
-
+            
             # 推理
             with torch.no_grad():
                 pred = self.informer_model(
                     batch_x, batch_x_mark, dec_inp, batch_y_mark
                 )
-
+            
             # 只返回预测部分（最后pred_len个点）
             return pred.cpu().numpy().squeeze()
         except Exception as e:
@@ -478,7 +468,7 @@ class ArcFaultModelSystem:
             import traceback
             traceback.print_exc()
             return None
-
+    
     def inference(self, data: np.ndarray, fault_scenario: str = None) -> Tuple[str, float, str]:
         """
         综合推理：分类 + 预测
@@ -492,7 +482,7 @@ class ArcFaultModelSystem:
         """
         # 使用1D-DITN进行分类
         status_text, confidence, fault_type = self.classify(data)
-
+        
         # 如果检测到故障，使用Informer进行预测
         if fault_type == "fault" and self.informer_model is not None:
             prediction = self.predict(data)
@@ -500,7 +490,7 @@ class ArcFaultModelSystem:
                 # 可以根据预测结果调整置信度
                 # 这里简化处理
                 pass
-
+        
         # 如果是模拟模式，可以根据fault_scenario调整结果
         if fault_scenario:
             if fault_scenario == "severe_arc":
@@ -512,13 +502,13 @@ class ArcFaultModelSystem:
                 status_text, confidence, fault_type = "干扰信号 (电机启动)", 10.0, "motor_start"
             elif fault_scenario == "normal":
                 status_text, confidence, fault_type = "运行正常 (安全)", max(2.0, confidence), "normal"
-
+        
         return status_text, confidence, fault_type
-
+    
     def get_statistics(self) -> Dict:
         """获取模型统计信息"""
         avg_inference_time = np.mean(self.inference_times[-100:]) if self.inference_times else 0
-
+        
         stats = {
             "ditn_model": "已加载" if self.ditn_model else "未加载",
             "informer_model": "已加载" if self.informer_model else "未加载",
@@ -526,5 +516,5 @@ class ArcFaultModelSystem:
             "average_inference_time_ms": round(avg_inference_time, 2),
             "device": str(self.device)
         }
-
+        
         return stats
