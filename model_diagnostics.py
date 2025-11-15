@@ -1,5 +1,4 @@
-import os
-import numpy as np
+mport numpy as np
 import torch
 import torch.nn as nn
 from typing import Dict, Tuple, Optional, List
@@ -16,55 +15,6 @@ try:
 except ImportError:
     REAL_MODELS_AVAILABLE = False
     print("警告: 真实模型模块未找到，将使用模拟模型")
-
-BASE_DIR = Path(__file__).parent
-
-def _auto_detect_ditn_model() -> Optional[str]:
-    """自动查找1D-DITN模型权重"""
-    env_path = os.environ.get("DITN_MODEL_PATH")
-    if env_path and Path(env_path).exists():
-        return env_path
-
-    candidates = [
-        BASE_DIR / "Arc Classification Task" / "Multi_class" / "Multi_class_Train_Files" / "1D-DITN" / "checkpoint",
-        BASE_DIR / "Arc Classification Task" / "Multi_class" / "Multi_class_Train_Files" / "1D-DITN" / "checkpoint.pth",
-        BASE_DIR / "Arc Classification Task" / "Two_class" / "Two_class_Train_Files" / "1D-DITN" / "checkpoint",
-        BASE_DIR / "Arc Classification Task" / "Two_class" / "Two_class_Train_Files" / "1D-DITN" / "checkpoint.pth",
-    ]
-    for path in candidates:
-        if path.exists():
-            return str(path)
-    return None
-
-def _auto_detect_informer_checkpoint() -> Optional[str]:
-    """自动查找Informer checkpoint目录"""
-    env_path = os.environ.get("INFORMER_CHECKPOINT_PATH")
-    if env_path and Path(env_path).exists():
-        return env_path
-
-    candidate = BASE_DIR / "Arc Prediction Task" / "checkpoints" / "informer_custom_train"
-    if candidate.exists():
-        return str(candidate)
-    return None
-
-def _load_sidecar_config(model_path: Optional[str]) -> Optional[Dict]:
-    """尝试读取与权重文件同目录的配置/类映射"""
-    if not model_path:
-        return None
-    base = Path(model_path)
-    candidates = [
-        base.with_suffix('.json'),
-        base.parent / f"{base.name}.json",
-        base.parent / f"{base.name}_config.json",
-    ]
-    for candidate in candidates:
-        try:
-            if candidate.exists():
-                with open(candidate, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        except Exception:
-            continue
-    return None
 
 class ArcFaultDetector(nn.Module):
     """电弧故障检测模型（1D CNN架构）"""
@@ -101,22 +51,15 @@ class ModelDiagnostics:
     def __init__(self, 
                  model_path: Optional[str] = None,
                  ditn_model_path: Optional[str] = None,
-                 informer_checkpoint: Optional[str] = None,
-                 ditn_config: Optional[Dict] = None):
+                 informer_checkpoint: Optional[str] = None):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        ditn_model_path = ditn_model_path or _auto_detect_ditn_model()
-        informer_checkpoint = informer_checkpoint or _auto_detect_informer_checkpoint()
-
-        if ditn_model_path and ditn_config is None:
-            ditn_config = _load_sidecar_config(ditn_model_path)
         
         # 尝试使用真实模型
         if REAL_MODELS_AVAILABLE:
             try:
                 self.arc_model_system = ArcFaultModelSystem(
                     ditn_model_path=ditn_model_path,
-                    informer_checkpoint=informer_checkpoint,
-                    ditn_config=ditn_config
+                    informer_checkpoint=informer_checkpoint
                 )
                 self.use_real_models = True
                 self.model = None  # 使用arc_model_system而不是单独的model
@@ -367,4 +310,3 @@ class ModelDiagnostics:
         self.total_inferences = 0
         self.start_time = time.time()
         print("统计信息已重置")
-
