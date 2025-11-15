@@ -51,8 +51,9 @@ class ModelDiagnostics:
     def __init__(self, 
                  model_path: Optional[str] = None,
                  ditn_model_path: Optional[str] = None,
-                 informer_checkpoint: Optional[str] = None):
+                 informer_checkpoint: Optional[str] = None):                 informer_checkpoint: Optional[str] = None):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         
         # 尝试使用真实模型
         if REAL_MODELS_AVAILABLE:
@@ -310,4 +311,3 @@ class ModelDiagnostics:
         self.total_inferences = 0
         self.start_time = time.time()
         print("统计信息已重置")
-
