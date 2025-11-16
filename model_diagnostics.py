@@ -6,6 +6,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 import time
+import os
 from collections import Counter
 
 # 尝试导入真实模型
@@ -51,16 +52,22 @@ class ModelDiagnostics:
     def __init__(self, 
                  model_path: Optional[str] = None,
                  ditn_model_path: Optional[str] = None,
-                 informer_checkpoint: Optional[str] = None):                 
+                 informer_checkpoint: Optional[str] = None,
+                 ditn_config: Optional[Dict] = None):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+        
+        # 自动检测多分类模型路径
+        if not ditn_model_path:
+            ditn_model_path = self._auto_detect_ditn_model()
         
         # 尝试使用真实模型
         if REAL_MODELS_AVAILABLE:
             try:
                 self.arc_model_system = ArcFaultModelSystem(
                     ditn_model_path=ditn_model_path,
-                    informer_checkpoint=informer_checkpoint
+                    informer_checkpoint=informer_checkpoint,
+                    ditn_config=ditn_config
                 )
                 self.use_real_models = True
                 self.model = None  # 使用arc_model_system而不是单独的model
@@ -102,6 +109,32 @@ class ModelDiagnostics:
         # 模型统计
         self.total_inferences = 0
         self.start_time = time.time()
+    
+    def _auto_detect_ditn_model(self) -> Optional[str]:
+        """自动查找1D-DITN模型权重"""
+        BASE_DIR = Path(__file__).parent
+        
+        # 环境变量优先
+        env_path = os.environ.get("DITN_MODEL_PATH")
+        if env_path and Path(env_path).exists():
+            return env_path
+        
+        # 按优先级查找（zhinengti.py同目录优先，然后多分类模型优先）
+        candidates = [
+            # 1. zhinengti.py同目录下的checkpoint（最高优先级）
+            BASE_DIR / "checkpoint",
+            # 2. 多分类模型目录
+            BASE_DIR / "Arc Classification Task" / "Multi_class" / "Multi_class_Train_Files" / "1D-DITN" / "checkpoint",
+            # 3. 二分类模型目录
+            BASE_DIR / "Arc Classification Task" / "Two_class" / "Two_class_Train_Files" / "1D-DITN" / "checkpoint",
+        ]
+        
+        for path in candidates:
+            if path.exists():
+                print(f"✅ 自动检测到模型: {path}")
+                return str(path)
+        
+        return None
     
     def _initialize_model(self):
         """初始化模型权重"""
@@ -311,4 +344,3 @@ class ModelDiagnostics:
         self.total_inferences = 0
         self.start_time = time.time()
         print("统计信息已重置")
-

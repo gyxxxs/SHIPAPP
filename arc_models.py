@@ -14,6 +14,7 @@ from pathlib import Path
 from collections import OrderedDict
 from scipy.signal import savgol_filter
 from sklearn.preprocessing import MinMaxScaler
+import math
 
 # 添加Informer模型路径
 informer_path = Path(__file__).parent / "Arc Prediction Task"
@@ -30,6 +31,10 @@ except ImportError:
 
 # ==================== 1D-DITN 模型定义 ====================
 
+def _same_padding(kernel_size: int, dilation: int = 1) -> int:
+    """PyTorch<1.10 无 padding='same'，手动计算填充"""
+    return math.floor(((kernel_size - 1) * dilation) / 2)
+
 class Inception(nn.Module):
     """Inception模块"""
     def __init__(self, input_size, filters, dilation=0):
@@ -39,7 +44,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=1,
             stride=1,
-            padding='same',
+            padding=_same_padding(1),
             bias=False
         )
         
@@ -48,7 +53,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=10,
             stride=1,
-            padding='same',
+            padding=_same_padding(10, 1 + dilation),
             dilation=1 + dilation,
             bias=False
         )
@@ -58,7 +63,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=20,
             stride=1,
-            padding='same',
+            padding=_same_padding(20, 1 + dilation),
             dilation=1 + dilation,
             bias=False
         )
@@ -68,7 +73,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=40,
             stride=1,
-            padding='same',
+            padding=_same_padding(40, 1 + dilation),
             dilation=1 + dilation,
             bias=False
         )
@@ -78,7 +83,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=1,
             stride=1,
-            padding='same',
+            padding=_same_padding(1),
             bias=False
         )
         
@@ -105,7 +110,7 @@ class Residual(nn.Module):
             out_channels=4 * filters,
             kernel_size=1,
             stride=1,
-            padding='same',
+            padding=_same_padding(1),
             bias=False
         )
         self.batch_norm = nn.BatchNorm1d(num_features=4 * filters)
@@ -141,13 +146,13 @@ class InceptionModel1D(nn.Module):
         
         for d in range(depth):
             modules[f'inception_{d}'] = Inception(
-                input_size=1 if d == 0 else 4 * filters,  # 第一层输入通道数为1
+                input_size=input_size if d == 0 else 4 * filters,
                 filters=filters,
                 dilation=dilation
             )
             if d % 3 == 2:
                 modules[f'residual_{d}'] = Residual(
-                    input_size=1 if d == 2 else 4 * filters,  # 第一层输入通道数为1
+                    input_size=input_size if d == 2 else 4 * filters,
                     filters=filters
                 )
         
@@ -243,16 +248,22 @@ class ArcFaultModelSystem:
         }
         
         self.ditn_config = {**default_ditn_config, **(ditn_config or {})}
+        class_map_from_config = self.ditn_config.pop('class_map', None)
         self.informer_config = {**default_informer_config, **(informer_config or {})}
+        
+        # 自动检测模型路径（如果未提供）
+        if not ditn_model_path:
+            ditn_model_path = self._auto_detect_ditn_model()
         
         # 初始化1D-DITN模型
         self.ditn_model = InceptionModel1D(**self.ditn_config).to(self.device)
         self.ditn_model.eval()
         
         if ditn_model_path and Path(ditn_model_path).exists():
-            self.load_ditn_model(ditn_model_path)
+            self.load_ditn_model(ditn_model_path, class_map_override=class_map_from_config)
         else:
             print("警告: 未找到1D-DITN模型文件，使用随机初始化")
+            self._update_class_map(class_map_from_config)
         
         # 初始化Informer模型
         self.informer_model = None
@@ -283,32 +294,68 @@ class ArcFaultModelSystem:
         # 数据预处理
         self.scaler = MinMaxScaler()
         
-        # 类别映射（二分类）
-        self.class_map = {
-            0: ("运行正常 (安全)", "normal"),
-            1: ("故障预警 (异常)", "fault")
-        }
+        # 类别映射
+        self.class_map = self._build_default_class_map(self.ditn_config['num_classes'])
         
         # 统计信息
         self.inference_count = 0
         self.inference_times = []
     
-    def load_ditn_model(self, model_path: str):
+    def load_ditn_model(self, model_path: str, class_map_override: Optional[Dict] = None):
         """加载1D-DITN模型"""
         try:
-            checkpoint = torch.load(model_path, map_location=self.device)
-            if isinstance(checkpoint, dict):
-                if 'model_state_dict' in checkpoint:
-                    self.ditn_model.load_state_dict(checkpoint['model_state_dict'])
-                elif 'state_dict' in checkpoint:
-                    self.ditn_model.load_state_dict(checkpoint['state_dict'])
+            state_dict, metadata = self._load_checkpoint_file(model_path)
+
+            # 更新配置
+            checkpoint_config = metadata.get('ditn_config', {})
+            if not checkpoint_config and 'config' in metadata:
+                # 尝试从config对象中提取配置
+                config = metadata['config']
+                if hasattr(config, '__dict__'):
+                    config_dict = vars(config)
+                elif isinstance(config, dict):
+                    config_dict = config
                 else:
-                    self.ditn_model.load_state_dict(checkpoint)
-            else:
-                self.ditn_model.load_state_dict(checkpoint)
-            print(f"1D-DITN模型已从 {model_path} 加载")
+                    config_dict = {}
+                
+                # 提取相关配置
+                for key in ['input_size', 'num_classes', 'filters', 'depth', 'dilation', 'dropout']:
+                    if key in config_dict:
+                        checkpoint_config[key] = config_dict[key]
+            
+            if checkpoint_config:
+                for key, value in checkpoint_config.items():
+                    if key in self.ditn_config:
+                        self.ditn_config[key] = value
+
+            # 检查并更新num_classes和input_size
+            checkpoint_num_classes = metadata.get('num_classes')
+            checkpoint_input_size = metadata.get('input_size')
+            
+            need_rebuild = False
+            if checkpoint_num_classes and checkpoint_num_classes != self.ditn_config['num_classes']:
+                self.ditn_config['num_classes'] = checkpoint_num_classes
+                need_rebuild = True
+            
+            if checkpoint_input_size and checkpoint_input_size != self.ditn_config['input_size']:
+                self.ditn_config['input_size'] = checkpoint_input_size
+                need_rebuild = True
+            
+            if need_rebuild:
+                self.ditn_model = InceptionModel1D(**self.ditn_config).to(self.device)
+                self.ditn_model.eval()
+
+            self.ditn_model.load_state_dict(state_dict, strict=False)
+            print(f"✅ 1D-DITN模型已从 {model_path} 加载")
+            print(f"   配置: num_classes={self.ditn_config['num_classes']}, input_size={self.ditn_config['input_size']}")
+
+            class_map_data = class_map_override or metadata.get('class_map')
+            self._update_class_map(class_map_data)
         except Exception as e:
-            print(f"加载1D-DITN模型失败: {e}")
+            print(f"❌ 加载1D-DITN模型失败: {e}")
+            import traceback
+            traceback.print_exc()
+            self._update_class_map(class_map_override)
     
     def load_informer_model(self, checkpoint_path: str):
         """加载Informer模型"""
@@ -333,35 +380,21 @@ class ArcFaultModelSystem:
             return False
     
     def preprocess_data(self, data: np.ndarray) -> torch.Tensor:
-        """数据预处理"""
-        import time
-        start_time = time.time()
-        
-        # 确保数据长度一致
-        target_length = self.ditn_config['input_size']
+        """数据预处理：确保维度和长度符合模型要求"""
+        """简化预处理，适配模拟数据"""
+        # 确保数据维度正确 (batch, seq_len)
         if len(data.shape) == 1:
             data = data.reshape(1, -1)
         
-        # 截断或填充
+        # 截断或填充到模型期望的输入长度
+        target_length = self.ditn_config['input_size']
         if data.shape[1] > target_length:
             data = data[:, :target_length]
         elif data.shape[1] < target_length:
-            padding = np.zeros((data.shape[0], target_length - data.shape[1]))
-            data = np.concatenate([data, padding], axis=1)
-        
-        # Savitzky-Golay滤波
-        filtered_data = np.zeros_like(data)
-        for i in range(data.shape[0]):
-            filtered_data[i] = savgol_filter(data[i], window_length=7, polyorder=2)
-        
-        # 归一化
-        filtered_data = filtered_data.reshape(-1, 1)
-        filtered_data = self.scaler.fit_transform(filtered_data)
-        filtered_data = filtered_data.reshape(1, -1)
-        
-        # 转换为tensor
-        tensor_data = torch.FloatTensor(filtered_data).to(self.device)
-        
+            data = np.pad(data, ((0, 0), (0, target_length - data.shape[1])), mode='constant')
+    
+        # 转换为tensor并添加通道维度 (batch, channels, seq_len)
+        tensor_data = torch.FloatTensor(data).unsqueeze(1).to(self.device)
         return tensor_data
     
     def classify(self, data: np.ndarray) -> Tuple[str, float, str]:
@@ -374,24 +407,14 @@ class ArcFaultModelSystem:
         import time
         start_time = time.time()
         
-        try:
-            # 预处理
-            tensor_data = self.preprocess_data(data)
-            # 注意: 模型forward方法会自动处理维度 [batch, seq_len] -> [batch, 1, seq_len]
-            
-            # 推理
-            with torch.no_grad():
-                outputs = self.ditn_model(tensor_data)
-                probabilities = torch.softmax(outputs, dim=1)
-                confidence, predicted = torch.max(probabilities, 1)
-        except Exception as e:
-            print(f"模型推理错误: {e}")
-            print(f"输入数据形状: {data.shape if hasattr(data, 'shape') else 'N/A'}")
-            print(f"Tensor数据形状: {tensor_data.shape if 'tensor_data' in locals() else 'N/A'}")
-            import traceback
-            traceback.print_exc()
-            # 返回默认值
-            return "运行正常 (安全)", 50.0, "normal"
+        # 预处理
+        tensor_data = self.preprocess_data(data)
+        
+        # 推理
+        with torch.no_grad():
+            outputs = self.ditn_model(tensor_data)
+            probabilities = torch.softmax(outputs, dim=1)
+            confidence, predicted = torch.max(probabilities, 1)
         
         inference_time = (time.time() - start_time) * 1000
         self.inference_times.append(inference_time)
@@ -474,18 +497,24 @@ class ArcFaultModelSystem:
         综合推理：分类 + 预测
         
         Args:
-            data: 输入数据
+            data: 输入数据（完整波形，通常5000点用于多分类模型）
             fault_scenario: 故障场景（用于模拟模式）
             
         Returns:
             (status_text, confidence, fault_type)
+        
+        注意：
+        - 1D-DITN分类模型：使用完整数据（5000点）进行分类
+        - Informer预测模型：自动截取最后48个点进行预测
+        - 两个模型的输入格式和长度要求不同，已自动处理
         """
-        # 使用1D-DITN进行分类
+        # 使用1D-DITN进行分类（使用完整数据，5000点）
         status_text, confidence, fault_type = self.classify(data)
         
-        # 如果检测到故障，使用Informer进行预测
+        # 如果检测到故障，使用Informer进行预测（自动截取最后48个点）
+        # 注意：predict方法内部会自动处理数据截取，不需要手动截取
         if fault_type == "fault" and self.informer_model is not None:
-            prediction = self.predict(data)
+            prediction = self.predict(data)  # 内部会自动截取最后48个点
             if prediction is not None:
                 # 可以根据预测结果调整置信度
                 # 这里简化处理
@@ -514,7 +543,157 @@ class ArcFaultModelSystem:
             "informer_model": "已加载" if self.informer_model else "未加载",
             "total_inferences": self.inference_count,
             "average_inference_time_ms": round(avg_inference_time, 2),
-            "device": str(self.device)
+            "device": str(self.device),
+            "num_classes": self.ditn_config.get('num_classes', 0)
         }
         
         return stats
+    
+    def _auto_detect_ditn_model(self) -> Optional[str]:
+        """自动查找1D-DITN模型权重"""
+        BASE_DIR = Path(__file__).parent
+        
+        # 环境变量优先
+        env_path = os.environ.get("DITN_MODEL_PATH")
+        if env_path and Path(env_path).exists():
+            return env_path
+        
+        # 按优先级查找（zhinengti.py同目录优先，然后多分类模型优先）
+        candidates = [
+            # 1. zhinengti.py同目录下的checkpoint（最高优先级）
+            BASE_DIR / "checkpoint",
+            # 2. 多分类模型目录
+            BASE_DIR / "Arc Classification Task" / "Multi_class" / "Multi_class_Train_Files" / "1D-DITN" / "checkpoint",
+            # 3. 二分类模型目录
+            BASE_DIR / "Arc Classification Task" / "Two_class" / "Two_class_Train_Files" / "1D-DITN" / "checkpoint",
+        ]
+        
+        for path in candidates:
+            if path.exists():
+                print(f"✅ 自动检测到模型: {path}")
+                return str(path)
+        
+        return None
+
+    def _load_checkpoint_file(self, model_path: str):
+        """加载checkpoint，返回(state_dict, metadata)"""
+        checkpoint = torch.load(model_path, map_location=self.device)
+        metadata: Dict = {}
+        state_dict = checkpoint
+
+        if isinstance(checkpoint, dict):
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            elif 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+
+            # 提取元数据
+            for key in ('num_classes', 'class_map', 'ditn_config', 'config'):
+                if key in checkpoint:
+                    metadata[key] = checkpoint[key]
+            
+            # 尝试从state_dict推断num_classes和input_size
+            if 'num_classes' not in metadata and state_dict:
+                # 通过linear2层的输出维度推断num_classes
+                for key in state_dict.keys():
+                    if 'linear2' in key and 'weight' in key:
+                        weight_shape = state_dict[key].shape
+                        if len(weight_shape) == 2:
+                            metadata['num_classes'] = weight_shape[0]
+                            break
+            
+            # 通过模型路径推断input_size（多分类模型通常是5000）
+            if 'input_size' not in metadata:
+                if 'Multi_class' in str(model_path):
+                    metadata['input_size'] = 5000  # 多分类模型
+                else:
+                    metadata['input_size'] = 4000  # 二分类模型
+
+        return state_dict, metadata
+
+    def _build_default_class_map(self, num_classes: int) -> Dict[int, Tuple[str, str]]:
+        """根据类别数量生成默认映射"""
+        class_map: Dict[int, Tuple[str, str]] = {}
+        
+        # 多分类模型（14类）的默认映射
+        if num_classes == 14:
+            multi_class_names = [
+                "运行正常 (安全)",           # 0
+                "一级预警 (早期电弧)",        # 1
+                "二级预警 (严重电弧)",        # 2
+                "干扰信号 (电机启动)",        # 3
+                "干扰信号 (负载切换)",        # 4
+                "干扰信号 (谐波干扰)",        # 5
+                "故障类型A (接触不良)",       # 6
+                "故障类型B (绝缘老化)",       # 7
+                "故障类型C (过载)",          # 8
+                "故障类型D (短路)",          # 9
+                "故障类型E (接地故障)",       # 10
+                "故障类型F (相间故障)",       # 11
+                "故障类型G (断相)",          # 12
+                "故障类型H (其他异常)"        # 13
+            ]
+            multi_class_codes = [
+                "normal", "early_arc", "severe_arc", "motor_start",
+                "load_switch", "harmonic", "contact_fault", "insulation_fault",
+                "overload", "short_circuit", "ground_fault", "phase_fault",
+                "phase_loss", "other_fault"
+            ]
+            for idx in range(num_classes):
+                class_map[idx] = (
+                    multi_class_names[idx] if idx < len(multi_class_names) else f"类别 {idx}",
+                    multi_class_codes[idx] if idx < len(multi_class_codes) else f"class_{idx}"
+                )
+        # 二分类模型
+        elif num_classes == 2:
+            class_map[0] = ("运行正常 (安全)", "normal")
+            class_map[1] = ("故障预警 (异常)", "fault")
+        # 其他情况
+        else:
+            for idx in range(num_classes):
+                if idx == 0:
+                    class_map[idx] = ("运行正常 (安全)", "normal")
+                elif idx == 1:
+                    class_map[idx] = ("故障预警 (异常)", "fault")
+                else:
+                    class_map[idx] = (f"类别 {idx}", f"class_{idx}")
+        
+        return class_map
+
+    def _update_class_map(self, class_map_data: Optional[Dict]):
+        """更新类别映射"""
+        if not class_map_data:
+            self.class_map = self._build_default_class_map(self.ditn_config['num_classes'])
+            return
+
+        formatted: Dict[int, Tuple[str, str]] = {}
+        for key, value in class_map_data.items():
+            try:
+                idx = int(key)
+            except Exception:
+                continue
+
+            status_text = None
+            fault_type = None
+
+            if isinstance(value, (list, tuple)):
+                if len(value) >= 2:
+                    status_text, fault_type = value[0], value[1]
+                elif len(value) == 1:
+                    status_text = value[0]
+            elif isinstance(value, dict):
+                status_text = value.get("status") or value.get("text") or value.get("label")
+                fault_type = value.get("fault_type") or value.get("code")
+            elif isinstance(value, str):
+                status_text = value
+
+            status_text = status_text or f"类别 {idx}"
+            fault_type = fault_type or f"class_{idx}"
+            formatted[idx] = (status_text, fault_type)
+
+        default_map = self._build_default_class_map(self.ditn_config['num_classes'])
+        for idx in range(self.ditn_config['num_classes']):
+            if idx not in formatted:
+                formatted[idx] = default_map.get(idx, (f"类别 {idx}", f"class_{idx}"))
+
+        self.class_map = formatted
