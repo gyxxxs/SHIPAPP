@@ -31,20 +31,41 @@ except ImportError:
 
 # ==================== 1D-DITN 模型定义 ====================
 
-def _same_padding(kernel_size: int, dilation: int = 1) -> int:
-    """PyTorch<1.10 无 padding='same'，手动计算填充"""
-    return math.floor(((kernel_size - 1) * dilation) / 2)
+# 检查PyTorch版本是否支持padding='same'
+try:
+    # 测试是否支持padding='same'
+    test_conv = nn.Conv1d(1, 1, kernel_size=3, stride=1, padding='same')
+    PADDING_SAME_AVAILABLE = True
+except (TypeError, ValueError):
+    PADDING_SAME_AVAILABLE = False
+
+def _get_padding(kernel_size: int, dilation: int = 1, use_same: bool = False) -> int:
+    """
+    获取padding值
+    如果支持padding='same'，返回'same'字符串
+    否则计算padding值
+    """
+    if use_same and PADDING_SAME_AVAILABLE:
+        return 'same'
+    # 计算padding以确保输出长度与输入相同
+    # 公式: padding = (kernel_size - 1) * dilation / 2
+    return ((kernel_size - 1) * dilation) // 2
 
 class Inception(nn.Module):
     """Inception模块"""
     def __init__(self, input_size, filters, dilation=0):
         super(Inception, self).__init__()
+        actual_dilation = 1 + dilation
+        
+        # 使用padding='same'如果可用，否则使用计算的padding
+        use_same = PADDING_SAME_AVAILABLE
+        
         self.bottleneck = nn.Conv1d(
             in_channels=input_size,
             out_channels=filters,
             kernel_size=1,
             stride=1,
-            padding=_same_padding(1),
+            padding=_get_padding(1, 1, use_same),
             bias=False
         )
         
@@ -53,8 +74,8 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=10,
             stride=1,
-            padding=_same_padding(10, 1 + dilation),
-            dilation=1 + dilation,
+            padding=_get_padding(10, actual_dilation, use_same),
+            dilation=actual_dilation,
             bias=False
         )
         
@@ -63,8 +84,8 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=20,
             stride=1,
-            padding=_same_padding(20, 1 + dilation),
-            dilation=1 + dilation,
+            padding=_get_padding(20, actual_dilation, use_same),
+            dilation=actual_dilation,
             bias=False
         )
         
@@ -73,8 +94,8 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=40,
             stride=1,
-            padding=_same_padding(40, 1 + dilation),
-            dilation=1 + dilation,
+            padding=_get_padding(40, actual_dilation, use_same),
+            dilation=actual_dilation,
             bias=False
         )
         
@@ -83,7 +104,7 @@ class Inception(nn.Module):
             out_channels=filters,
             kernel_size=1,
             stride=1,
-            padding=_same_padding(1),
+            padding=_get_padding(1, 1, use_same),
             bias=False
         )
         
@@ -95,6 +116,15 @@ class Inception(nn.Module):
         y2 = self.conv2(x)
         y3 = self.conv3(x)
         y4 = self.conv4(x)
+        
+        # 确保所有输出长度一致（处理padding计算可能的误差）
+        min_len = min(y1.shape[2], y2.shape[2], y3.shape[2], y4.shape[2])
+        if y1.shape[2] != min_len or y2.shape[2] != min_len or y3.shape[2] != min_len or y4.shape[2] != min_len:
+            y1 = y1[:, :, :min_len]
+            y2 = y2[:, :, :min_len]
+            y3 = y3[:, :, :min_len]
+            y4 = y4[:, :, :min_len]
+        
         y = torch.cat([y1, y2, y3, y4], dim=1)
         y = self.batch_norm(y)
         y = F.relu(y)
@@ -105,12 +135,13 @@ class Residual(nn.Module):
     """残差模块"""
     def __init__(self, input_size, filters):
         super(Residual, self).__init__()
+        use_same = PADDING_SAME_AVAILABLE
         self.bottleneck = nn.Conv1d(
             in_channels=input_size,
             out_channels=4 * filters,
             kernel_size=1,
             stride=1,
-            padding=_same_padding(1),
+            padding=_get_padding(1, 1, use_same),
             bias=False
         )
         self.batch_norm = nn.BatchNorm1d(num_features=4 * filters)
