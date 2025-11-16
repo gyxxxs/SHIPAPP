@@ -145,14 +145,18 @@ class InceptionModel1D(nn.Module):
         modules = OrderedDict()
         
         for d in range(depth):
+            # 第一层输入通道数是1（单通道时间序列），后续层是4*filters
+            input_channels = 1 if d == 0 else 4 * filters
             modules[f'inception_{d}'] = Inception(
-                input_size=input_size if d == 0 else 4 * filters,
+                input_size=input_channels,
                 filters=filters,
                 dilation=dilation
             )
             if d % 3 == 2:
+                # 残差层的输入通道数：第一层残差是1，后续是4*filters
+                residual_input_channels = 1 if d == 2 else 4 * filters
                 modules[f'residual_{d}'] = Residual(
-                    input_size=input_size if d == 2 else 4 * filters,
+                    input_size=residual_input_channels,
                     filters=filters
                 )
         
